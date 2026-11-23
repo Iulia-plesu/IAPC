@@ -1,84 +1,110 @@
-# RAG platform (EduPulse AI): Epic 1, Story 1, Task 1: PDF ingestion
+# EduPulse AI RAG platform: Epic 1, Story 1, Task 1: PDF ingestion (complete)
 
-Maven multi-module project: Spring Boot 4.0.7, Spring Cloud 2025.1.2, Spring AI 2.0.0, Java 21, pgvector.
-Modules: `eureka-server`, `api-gateway`, `ingest-static` (this task), `ingest-dynamic`, `retrieval-pre`, `retrieval-post`
-(the last three are empty placeholders for the next stories).
+Maven multi-module project: Spring Boot 4.0.7, Spring Cloud 2025.1.2, Spring AI 2.0.0, Java 21, PostgreSQL + pgvector, Ollama (embeddings).
+Modules: `eureka-server`, `api-gateway`, `ingest-static` (this task), and placeholders `ingest-dynamic`, `retrieval-pre`, `retrieval-post` for the next stories.
 
 ## What Task 1 does
 
-`PDF` -> page-by-page text (PDFBox) -> cleaning -> **structure-aware chunking with overlap** -> embedding + storage in pgvector.
+```
+PDF in ./resources  ->  page text (PDFBox)  ->  cleaning  ->  structure-aware chunks (with overlap)
+                    ->  embedding (Ollama nomic-embed-text, 768 dims)  ->  pgvector table `vector_store`
+```
 
-* **doc_id**: `doc-` + first 16 hex chars of SHA-256 of the file path inside `resources/` (lower case). It does not change when the content changes.
+* **doc_id**: `doc-` + first 16 hex chars of SHA-256 of the lower-cased file path inside `resources/`. Stays the same when the content changes (needed for Task 2).
 * **checksum**: SHA-256 of the file bytes.
-* **Metadata on every chunk**: `doc_id`, `version` (1), `source`, `page`, `chunk_index`, `checksum`, plus `embedding_model` and `section` (last heading).
-* **Chunk id** is a deterministic UUID from `doc_id + checksum + chunk_index`, so storing the same chunk twice overwrites it.
-* **Re-running the same file**: skipped (same doc_id and checksum). A file with the same path but a different checksum is reported as `CHANGED_NOT_UPDATED` and left untouched: replacing old chunks is Task 2.
-* **Partial failure**: if embedding/storing fails half-way, the chunks of that document are removed so a half-stored document is never mistaken for a complete one.
-* **One bad file never stops a scan**; it is logged and reported as `FAILED`.
+* **Metadata on every chunk**: `doc_id`, `version` (1), `source`, `page`, `chunk_index`, `checksum`, plus `embedding_model` and `section`.
+* **Chunk id**: deterministic UUID from `doc_id + checksum + chunk_index`; storing a chunk twice overwrites it.
+* **Re-run of the same file**: skipped (`SKIPPED_UNCHANGED`), no duplicates.
+* **Same path, different content**: reported as `CHANGED_NOT_UPDATED` and left untouched. Replacing old chunks is Task 2.
+* **Failure while storing**: partial chunks of that document are removed, so a half-stored document is never mistaken for a complete one.
+* **A bad file never stops a scan**: logged and reported as `FAILED`.
+* **Path safety**: only PDFs inside the resources folder are accepted.
 
-### Chunking rules (`StructureAwareChunker`)
-* Size and overlap are in approximate tokens (1 token ~ 4 chars). Rules: `size >= 100`, `0 <= overlap <= size/2` (checked at startup).
-* A heading (numbered such as `1.2 Scope`, `Article 5. Penalties`, or an ALL CAPS line) closes the current chunk and starts a new one. No overlap across headings.
-* A table (rows with wide gaps / `|` / short numeric rows) stays in one chunk and is only split between rows. Rows are written as `a | b | c`.
+### Chunking rules
+* Size and overlap are approximate tokens (1 token ~ 4 characters). `size >= 100`, `0 <= overlap <= size/2`; invalid values stop the service at startup.
+* Headings (`1.2 Scope`, `Article 5. Penalties`, ALL CAPS lines) start a new chunk, without overlap across headings.
+* Tables stay in one chunk and are split only between rows; rows are stored as `a | b | c`.
 * Paragraphs are split on sentence boundaries. Chunks never cross a page, so `page` is exact.
-* Garbled pages (more than 30% unreadable characters) are skipped and logged. Ligatures, soft hyphens, control characters and line-end hyphenation are cleaned.
+* Garbled pages (over 30% unreadable characters) are skipped and logged. Ligatures, soft hyphens, control characters and line-end hyphenation are cleaned.
 
 ## Configuration
 
-| Property (env var) | Default | Meaning |
-|---|---|---|
-| `app.chunk.size` (`APP_CHUNK_SIZE` / `CHUNK_SIZE` in .env) | 800 | max chunk size, approx. tokens |
-| `app.chunk.overlap` (`APP_CHUNK_OVERLAP` / `CHUNK_OVERLAP`) | 100 | overlap between consecutive chunks |
-| `spring.ai.ollama.embedding.options.model` (`EMBEDDING_MODEL`) | nomic-embed-text | Ollama embedding model, stored in metadata |
-| `spring.ai.vectorstore.pgvector.dimensions` (`EMBEDDING_DIMENSIONS`) | 768 | must match the model; changing the model means re-indexing |
-| `app.resources.path` (`APP_RESOURCES_PATH`) | `./resources` | folder with the PDFs |
-| `app.ingest.on-startup` (`APP_INGEST_ON_STARTUP`) | true | scan the folder when the service is ready |
+| Property | Env var (`.env`) | Default | Meaning |
+|---|---|---|---|
+| `app.chunk.size` | `CHUNK_SIZE` | 800 | max chunk size, approx. tokens |
+| `app.chunk.overlap` | `CHUNK_OVERLAP` | 100 | overlap between consecutive chunks |
+| `spring.ai.ollama.embedding.options.model` | `EMBEDDING_MODEL` | nomic-embed-text | embedding model, stored in metadata |
+| `spring.ai.vectorstore.pgvector.dimensions` | `EMBEDDING_DIMENSIONS` | 768 | must match the model; changing the model means re-indexing |
+| `spring.ai.ollama.base-url` | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` (Compose) / `http://localhost:11434` (IntelliJ) | where Ollama runs |
+| `app.resources.path` | `APP_RESOURCES_PATH` | `/data/resources` (Compose) / `./resources` | folder with PDFs (mounted read-only) |
+| `app.ingest.on-startup` | `APP_INGEST_ON_STARTUP` | true | scan the folder when the service is ready |
 
-Ollama needs no API key. Secrets live only in `.env` (git-ignored). Copy `.env.example` to `.env` and set `POSTGRES_PASSWORD` (any password you invent) and `VENDOR_WEBHOOK_SECRET` (any random string; used in Story 2).
+No secrets are committed. Copy `.env.example` to `.env` (git-ignored) and set `POSTGRES_PASSWORD` and `VENDOR_WEBHOOK_SECRET` (any values you choose; Ollama needs no API key).
 
-**Ollama**: install it, then run `ollama pull nomic-embed-text` (embeddings, 768 dimensions) and optionally `ollama pull llama3.2` (chat, used by later stories). Check with `ollama list`. If you use another embedding model, set `EMBEDDING_MODEL` and `EMBEDDING_DIMENSIONS` (e.g. `mxbai-embed-large` = 1024) and re-index.
+## Run
 
-## Run with IntelliJ IDEA
-
-1. **Open**: File > Open > select the root `pom.xml` > "Open as Project". Wait for Maven import. Project SDK: JDK 21 (File > Project Structure).
-2. **Config**: copy `.env.example` to `.env` and fill the two required values. Make sure Ollama is running with `nomic-embed-text` pulled.
-3. **Database only**: in a terminal in the project root run `docker compose up -d pgvector` (needs Docker Desktop; compose also checks the two variables above).
-4. **Run configuration** for `IngestStaticApplication` (Run > Edit Configurations > Spring Boot):
-   * Working directory: `$ProjectFileDir$` (so `./resources` is found)
-   * Environment variables: `DB_PASSWORD=<your POSTGRES_PASSWORD>;EUREKA_CLIENT_ENABLED=false` (Ollama is found at http://localhost:11434 by default)
-5. Run it. On start it ingests `./resources/*.pdf` (3 samples included). Logs show chunk counts per file.
-6. **Tests**: right click `ingest-static/src/test` > Run Tests (no database or API key needed).
-7. **Whole stack**: `docker compose up --build -d`, then `docker compose ps`. Containers reach Ollama through `host.docker.internal`. On Windows/Mac (Docker Desktop) this works out of the box. On Linux start Ollama with `OLLAMA_HOST=0.0.0.0`.
-
-## Try it (through the gateway, port 8080)
-
+```cmd
+copy .env.example .env
+notepad .env
+ollama pull nomic-embed-text
+docker compose up --build -d
+docker compose ps
 ```
-curl -X POST http://localhost:8080/ingest-static/ingest/scan
-curl -X POST "http://localhost:8080/ingest-static/ingest/file?name=sample-tables.pdf"
-curl "http://localhost:8080/ingest-static/ingest/sample?count=20"      # 20 random chunks for the manual quality check
-```
-Running `scan` twice: the second answer shows `SKIPPED_UNCHANGED` for every file and the row count in `vector_store` does not change
-(`SELECT count(*) FROM vector_store;`).
+Only the gateway (8080) is public; Eureka (8761) and Postgres (5432) listen on localhost only. The full list of commands (tests, checks, cleanup) is in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 
-## Acceptance criteria (Task 1) and where they are met
+## REST API (through the gateway, port 8080)
+
+| Method and path | Purpose |
+|---|---|
+| `POST /ingest-static/ingest/scan` | ingest every PDF in the resources folder |
+| `POST /ingest-static/ingest/file?name=<file.pdf>` | ingest one PDF |
+| `GET  /ingest-static/ingest/sample?count=20` | random stored chunks for the manual quality check (max 100) |
+
+Status values: `INGESTED`, `SKIPPED_UNCHANGED`, `CHANGED_NOT_UPDATED`, `FAILED`. Errors for a single file return HTTP 400 with `{"error": "..."}`.
+
+## Test results
+
+Environment: Windows (10.0.26300), Docker Desktop, Ollama local, 2026-11-23.
+
+| Check | Result |
+|---|---|
+| `docker compose up --build -d`: all six images build (main and test sources compile) | OK (about 100 s) |
+| Startup order: pgvector, eureka, ingest-static healthy; gateway and the other services started | OK |
+| Startup scan: 3 PDFs found and ingested | OK |
+| `sample-policy.pdf`: 4 pages, 8 chunks | OK |
+| `sample-tables.pdf`: 2 pages, 4 chunks | OK |
+| `sample-two-columns.pdf`: 3 pages, 8 chunks | OK |
+| Database counts per source (8 / 4 / 8, total 20) match the logs | OK |
+| Missing file: `POST /ingest/file?name=nope.pdf` returns 400 `{"error":"File not found: nope.pdf"}` | OK |
+
+Still to confirm and sign off by the team (see the runbook, sections 6 to 9):
+
+- [ ] Re-run creates no duplicates (`SKIPPED_UNCHANGED`, count stays 20)
+- [ ] Broken file does not stop the batch
+- [ ] Manual check of 20 random chunks: no broken or garbled text; tables and columns look right. _Reviewer / date / result:_ ..........
+- [ ] 34 unit tests green (`mvn test` or IntelliJ)
+
+## Acceptance criteria (Task 1)
 
 | Criterion | Where |
 |---|---|
-| Sample PDFs incl. tables and multiple columns ingested | `resources/sample-policy.pdf`, `sample-tables.pdf`, `sample-two-columns.pdf` |
-| Full metadata schema on every chunk | `Chunk.metadata()`; test `ingestsAPdfWithFullMetadataOnEveryChunk` |
-| Size, overlap, embedding model configurable and documented | table above, `application.yml` |
-| Re-run creates no duplicates | `reRunningTheSameFileCreatesNoDuplicates`, `storingTheSameChunksTwiceStillGivesNoDuplicates` |
-| Manual check of 20 random chunks | `GET /ingest/sample?count=20` (**to be done by the team and signed off below**) |
-| Success path + failure path tests | `ingest-static/src/test` (33 unit tests) |
-| No secrets in repo; errors and key events logged | `.gitignore`, `.env.example`; SLF4J logs in extractor, chunker, service |
+| Sample PDFs incl. tables and multiple columns ingested end to end | `resources/`, startup scan |
+| Full metadata schema on every chunk | `Chunk.metadata()`; test `ingestsAPdfWithFullMetadataOnEveryChunk`; SQL check in the runbook |
+| Chunk size, overlap, embedding model configurable and documented | Configuration table above |
+| Re-running the same file creates no duplicates | tests `reRunningTheSameFileCreatesNoDuplicates`, `storingTheSameChunksTwiceStillGivesNoDuplicates`; runbook section 6 |
+| Manual check of 20 random chunks | `GET /ingest/sample?count=20` or SQL in the runbook |
+| Success and failure path tests; errors and key events logged; no secrets | `ingest-static/src/test` (34 tests), SLF4J logging, `.gitignore` + `.env.example` |
 
-Manual check record: _date / reviewer / result_ ......
+## Known limits
 
-## Known limits and things to verify on the first real run
+* Table and column detection are heuristics. Tables whose cells PDFBox returns on separate lines are stored as running text (no data lost). If this shows up in the manual check, the fix is the `setSortByPosition` setting in `PdfPageExtractor`.
+* Scanned PDFs (images only) are rejected with a clear message; there is no OCR.
+* The PDFBox warning `Using fallback font LiberationSans` is harmless: the container lacks the PDF's standard font and uses a substitute; text extraction is not affected.
+* Updating, deleting and the manifest are Story 1 Tasks 2 to 4.
 
-* **Not compiled in the environment where it was written** (no JDK/Maven there). The Spring AI 2.0 / Boot 4 names used (including the `spring.ai.ollama.*` properties and `spring-ai-starter-model-ollama`) are `Document.builder().id().text().metadata().build()`, `VectorStore.add(List<Document>)` and the starters from your settings. If IntelliJ flags one, it is a one-line change in `PgVectorChunkRepository`.
-* **Table and column detection are heuristics.** Whether PDFBox returns a table row on one line depends on how the PDF was produced. Use `/ingest/sample` and the manual check on the three sample PDFs. If tables look flattened, the fix is a setting in `PdfPageExtractor` (`setSortByPosition`).
-* Scanned PDFs (images only) have no text layer and are rejected with a clear message. OCR is out of scope.
-
-## Baseline (definition of done) checklist, for the team
-- [ ] Code reviewed and merged to main  - [ ] Tests pass (`mvn test`)  - [ ] No secrets committed  - [ ] README updated  - [ ] Demo to the product owner
+## Definition of done (baseline), for the team
+- [ ] Code reviewed and merged to main
+- [ ] Tests pass
+- [ ] No secrets in the repository
+- [ ] README updated
+- [ ] Demo to the product owner
