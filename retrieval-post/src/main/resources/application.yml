@@ -1,0 +1,60 @@
+# Story 4: post-retrieval (rerank, neighbor stitching, citations, evaluation).
+server:
+  port: 8080
+
+spring:
+  application:
+    name: retrieval-post
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/ragdb}
+    username: ${DB_USER:rag}
+    password: ${DB_PASSWORD:}
+  ai:
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      embedding:
+        options:
+          model: ${EMBEDDING_MODEL:nomic-embed-text}
+      chat:
+        options:
+          model: ${CHAT_MODEL:llama3.2}
+    vectorstore:
+      pgvector:
+        # Only ingest-static creates the table; the others expect it to exist.
+        initialize-schema: false
+        index-type: HNSW
+        distance-type: COSINE_DISTANCE
+        # Must match the embedding model output size.
+        dimensions: ${EMBEDDING_DIMENSIONS:768}
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+    lease-renewal-interval-in-seconds: 10
+    lease-expiration-duration-in-seconds: 30
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when-authorized
+
+app:
+  rerank:
+    top-n: ${APP_RERANK_TOP_N:20}
+    top-k: ${APP_RERANK_TOP_K:5}
+  stitch:
+    token-budget: ${APP_STITCH_TOKEN_BUDGET:2000}
+  grounding:
+    # Below this similarity the answer is "I don't know".
+    similarity-threshold: ${APP_RETRIEVAL_SIMILARITY_THRESHOLD:0.70}
+  evaluation:
+    golden-set-path: ${APP_EVAL_GOLDEN_SET:classpath:eval/golden-set.json}

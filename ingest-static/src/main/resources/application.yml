@@ -1,0 +1,62 @@
+# Story 1: static ingestion of user-managed PDFs. Owns the vector_store schema.
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ingest-static
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/ragdb}
+    username: ${DB_USER:rag}
+    password: ${DB_PASSWORD:}
+  ai:
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      embedding:
+        options:
+          model: ${EMBEDDING_MODEL:nomic-embed-text}
+    vectorstore:
+      pgvector:
+        # Only ingest-static creates the table; the others expect it to exist.
+        initialize-schema: true
+        index-type: HNSW
+        distance-type: COSINE_DISTANCE
+        # Must match the embedding model output size.
+        dimensions: ${EMBEDDING_DIMENSIONS:768}
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+    lease-renewal-interval-in-seconds: 10
+    lease-expiration-duration-in-seconds: 30
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when-authorized
+
+app:
+  resources:
+    path: ${APP_RESOURCES_PATH:./resources}
+  # Chunk size and overlap are in approximate tokens (1 token ~ 4 characters).
+  # Rules: size >= 100 and 0 <= overlap <= size / 2 (checked at startup).
+  chunk:
+    size: ${APP_CHUNK_SIZE:800}
+    overlap: ${APP_CHUNK_OVERLAP:100}
+  # Recorded in every chunk's metadata (embedding_model). Follows the Spring AI setting above.
+  embedding-model: ${spring.ai.ollama.embedding.options.model:nomic-embed-text}
+  ingest:
+    # Scan the resources folder once when the service is ready.
+    on-startup: ${APP_INGEST_ON_STARTUP:true}
+  # Manifest of what was ingested (doc_id, checksum, version, embedding model, chunk count)
+  manifest:
+    enabled: true
